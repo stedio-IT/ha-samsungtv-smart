@@ -1,7 +1,7 @@
 """Logo implementation for SamsungTV Smart."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
 import json
 import logging
@@ -154,7 +154,7 @@ class Logo:
         if self._media_image_base_url is None:
             return False
 
-        check_time = datetime.now(timezone.utc).astimezone()
+        check_time = datetime.utcnow().astimezone()
         if self._last_check is not None and self._last_check > check_time - timedelta(
             days=LOGO_FILE_DAYS_BEFORE_UPDATE
         ):
@@ -167,11 +167,11 @@ class Logo:
         if not self.check_requested():
             return
 
-        check_time = datetime.now(timezone.utc).astimezone()
+        check_time = datetime.utcnow().astimezone()
         update_file = not await aiopath.path.isfile(self._logo_file_download_path)
         if not update_file:
-            file_date = datetime.fromtimestamp(
-                await aiopath.path.getmtime(self._logo_file_download_path), timezone.utc
+            file_date = datetime.utcfromtimestamp(
+                await aiopath.path.getmtime(self._logo_file_download_path)
             ).astimezone()
             if file_date > check_time - timedelta(days=LOGO_FILE_DAYS_BEFORE_UPDATE):
                 self._last_check = file_date

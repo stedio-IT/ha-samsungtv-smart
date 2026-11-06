@@ -24,7 +24,7 @@ Copyright (C) 2020 Ollo69
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 import json
 import logging
@@ -76,11 +76,6 @@ def _format_rest_url(host: str, append: str = "") -> str:
 def gen_uuid() -> str:
     """Generate new uuid."""
     return str(uuid.uuid4())
-
-
-def aware_utcnow() -> datetime:
-    """Return current UTC time with timezone info."""
-    return datetime.now(timezone.utc)
 
 
 def kill_subprocess(
@@ -279,7 +274,7 @@ class SamsungTVWS:
         self._running_apps: dict[str, datetime] = {}
         self._running_app: str | None = None
         self._running_app_changed: bool | None = None
-        self._last_running_scan = aware_utcnow()
+        self._last_running_scan = datetime.utcnow()
         self._app_type = {}
         self._sync_lock = Lock()
         self._last_app_scan = datetime.min
@@ -408,6 +403,11 @@ class SamsungTVWS:
                 connection = self._ws_remote
                 using_remote = True
             else:
+                # The cached connection opened by a previous call is never
+                # validated: after the TV goes to standby it is dead, so a
+                # KEY_POWER sent on it is lost and power on fails. Always
+                # open a fresh connection when the remote client is not running.
+                self._close_connection()
                 connection = self.open()
         elif ws_socket:
             connection = ws_socket
@@ -429,10 +429,15 @@ class SamsungTVWS:
         except websocket.WebSocketTimeoutException:
             _LOGGING.warning("_ws_send: timeout error sending command %s", payload)
             return False
+        except OSError as exc:
+            _LOGGING.warning("_ws_send: socket error sending command: %s", exc)
+            if not using_remote:
+                self._close_connection()
+            return False
 
         if using_remote:
             # we consider a message sent valid as a ping
-            self._last_ping = aware_utcnow()
+            self._last_ping = datetime.utcnow()
 
         if key_press_delay is None:
             if self.key_press_delay > 0:
@@ -520,7 +525,7 @@ class SamsungTVWS:
     def _on_ping_remote(self, _, payload):
         """Manage ping message received by remote WS connection."""
         _log_ping_pong("Received WS remote ping %s, sending pong", payload)
-        self._last_ping = aware_utcnow()
+        self._last_ping = datetime.utcnow()
         if self._ws_remote.sock:
             try:
                 self._ws_remote.sock.pong(payload)
@@ -536,7 +541,7 @@ class SamsungTVWS:
             return
 
         # we consider a message valid as a ping
-        self._last_ping = aware_utcnow()
+        self._last_ping = datetime.utcnow()
 
         if event == "ms.channel.connect":
             conn_data = response.get("data")
@@ -610,7 +615,7 @@ class SamsungTVWS:
     def _on_ping_control(self, _, payload):
         """Manage ping message received by control WS channel."""
         _log_ping_pong("Received WS control ping %s, sending pong", payload)
-        self._last_control_ping = aware_utcnow()
+        self._last_control_ping = datetime.utcnow()
         if self._ws_control.sock:
             try:
                 self._ws_control.sock.pong(payload)
@@ -654,7 +659,7 @@ class SamsungTVWS:
         elif (is_running := result.get("visible")) is None:
             return
 
-        call_time = aware_utcnow()
+        call_time = datetime.utcnow()
         self._last_running_scan = call_time
         self._running_apps[app_id] = call_time
         if self._running_app:
@@ -747,7 +752,7 @@ class SamsungTVWS:
     def _on_ping_art(self, _, payload):
         """Manage ping message received by art WS channel."""
         _log_ping_pong("Received WS art ping %s, sending pong", payload)
-        self._last_art_ping = aware_utcnow()
+        self._last_art_ping = datetime.utcnow()
         if self._ws_art.sock:
             try:
                 self._ws_art.sock.pong(payload)
@@ -763,7 +768,7 @@ class SamsungTVWS:
             return
 
         # we consider a message valid as a ping
-        self._last_art_ping = aware_utcnow()
+        self._last_art_ping = datetime.utcnow()
 
         if event == "ms.channel.connect":
             conn_data = response.get("data")
@@ -884,7 +889,7 @@ class SamsungTVWS:
 
     def _check_remote(self):
         """Check current remote thread status."""
-        call_time = aware_utcnow()
+        call_time = datetime.utcnow()
         if self._ws_remote:
             difference = (call_time - self._last_ping).total_seconds()
             if difference >= MAX_WS_PING_INTERVAL:
@@ -906,7 +911,7 @@ class SamsungTVWS:
         if self._artmode_status == ArtModeStatus.Unsupported:
             return
         if self._ws_art:
-            difference = (aware_utcnow() - self._last_art_ping).total_seconds()
+            difference = (datetime.utcnow() - self._last_art_ping).total_seconds()
             if difference >= MAX_WS_PING_INTERVAL:
                 self._artmode_status = ArtModeStatus.Unavailable
                 self._ws_art.close()
@@ -920,7 +925,7 @@ class SamsungTVWS:
         if not self._status_callback:
             self._running_app_changed = False
             return
-        last_change = (aware_utcnow() - self._last_running_scan).total_seconds()
+        last_change = (datetime.utcnow() - self._last_running_scan).total_seconds()
         if last_change >= 2:  # delay 2 seconds before calling
             self._running_app_changed = False
             self._status_callback()
@@ -932,7 +937,7 @@ class SamsungTVWS:
 
         scan_interval = 1 if force_scan else MIN_APP_SCAN_INTERVAL
         with self._sync_lock:
-            call_time = aware_utcnow()
+            call_time = datetime.utcnow()
             difference = (call_time - self._last_app_scan).total_seconds()
             if difference < scan_interval:
                 return
@@ -959,7 +964,7 @@ class SamsungTVWS:
     def set_power_on_request(self, set_art_mode=False, power_on_delay=0):
         """Set a power on request status and save the time of the rquest."""
         self._power_on_requested = True
-        self._power_on_requested_time = aware_utcnow()
+        self._power_on_requested_time = datetime.utcnow()
         self._power_on_artmode = set_art_mode
         self._power_on_delay = max(power_on_delay, 0) or DEFAULT_POWER_ON_DELAY
 
@@ -1052,6 +1057,13 @@ class SamsungTVWS:
 
         self.connection = connection
         return connection
+
+    def _close_connection(self):
+        """Close the cached WS connection, ignoring errors on dead sockets."""
+        try:
+            self.close()
+        except Exception:  # pylint: disable=broad-except
+            self.connection = None
 
     def close(self):
         """Close WS connection."""
